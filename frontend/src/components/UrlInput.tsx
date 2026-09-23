@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { Youtube, Play, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 
 interface UrlInputProps {
@@ -29,7 +29,7 @@ export const UrlInput: React.FC<UrlInputProps> = ({ onJobStarted }) => {
     setError(null);
 
     try {
-      const response = await axios.post('/api/process-url', {
+      const response = await api.post('/api/process-url', {
         url,
         mode: mode === 'scene' ? 'scene_change' : 'interval',
         sensitivity: sensitivity.toLowerCase(),

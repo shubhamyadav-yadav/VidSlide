@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Download, Check, FileArchive } from 'lucide-react';
+import { getApiUrl } from '../api';
 
 interface DownloadButtonProps {
   jobId: string;
@@ -10,7 +11,7 @@ export const DownloadButton: React.FC<DownloadButtonProps> = ({ jobId }) => {
 
   const handleDownload = () => {
     const link = document.createElement('a');
-    link.href = `/api/download/${jobId}`;
+    link.href = getApiUrl(`/api/download/${jobId}`);
     link.setAttribute('download', '');
     document.body.appendChild(link);
     link.click();

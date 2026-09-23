@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
+import { getApiUrl } from '../api';
 
 interface ProgressPanelProps {
   jobId: string;
@@ -28,7 +29,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({ jobId, onCompleted
     if (!jobId) return;
 
     let isCompletedOrFailed = false;
-    const eventSource = new EventSource(`/api/progress/${jobId}`);
+    const eventSource = new EventSource(getApiUrl(`/api/progress/${jobId}`));
 
     eventSource.onmessage = (event) => {
       try {
@@ -60,7 +61,7 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({ jobId, onCompleted
         return;
       }
       try {
-        const res = await fetch(`/api/frames/${jobId}`);
+        const res = await fetch(getApiUrl(`/api/frames/${jobId}`));
         if (res.ok) {
           const frameData = await res.json();
           if (frameData.status === 'completed') {

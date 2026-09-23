@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 
 interface VideoFormProps {
   onJobStarted: (jobId: string) => void;
@@ -59,7 +59,7 @@ export const VideoForm: React.FC<VideoFormProps> = ({
       }
       setIsLoading(true);
       try {
-        const response = await axios.post('/api/process-url', {
+        const response = await api.post('/api/process-url', {
           url: url.trim(),
           mode: mode === 'scene' ? 'scene_change' : 'interval',
           sensitivity,
@@ -89,7 +89,7 @@ export const VideoForm: React.FC<VideoFormProps> = ({
       if (endTime) formData.append('end_time', endTime);
 
       try {
-        const response = await axios.post('/api/upload', formData, {
+        const response = await api.post('/api/upload', formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
         onJobStarted(response.data.job_id);

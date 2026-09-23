@@ -70,6 +70,16 @@ python -m pytest backend/tests/test_pipeline.py -v
 
 ---
 
+## Deployment
+
+VidSlide is ready for cloud deployment:
+- **Frontend on Vercel:** Zero-configuration deployment using the included `vercel.json`. Set `VITE_API_URL` to point to your backend.
+- **Backend on Render / Railway / Docker:** Media processing engine running FastAPI and OpenCV.
+
+See the complete step-by-step [Deployment Guide](DEPLOYMENT.md) for full instructions.
+
+---
+
 ## License
 
 MIT

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import axios from 'axios';
+import { api, getApiUrl } from '../api';
 import { Film, X, ChevronLeft, ChevronRight, Download, ImageIcon, ZoomIn } from 'lucide-react';
 
 interface PreviewGalleryProps {
@@ -26,7 +26,7 @@ export const PreviewGallery: React.FC<PreviewGalleryProps> = ({ jobId }) => {
     let isMounted = true;
     const fetchFrames = async () => {
       try {
-        const response = await axios.get(`/api/frames/${jobId}`);
+        const response = await api.get(`/api/frames/${jobId}`);
         const frameNames: string[] = response.data?.frames || [];
 
         const parsedFrames = frameNames.map((name) => {
@@ -38,7 +38,7 @@ export const PreviewGallery: React.FC<PreviewGalleryProps> = ({ jobId }) => {
           return {
             name,
             time,
-            url: `/api/frame/${jobId}/${name}`,
+            url: getApiUrl(`/api/frame/${jobId}/${name}`),
           };
         });
 

@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import axios from 'axios';
+import { api } from '../api';
 import { Upload, CloudUpload, Play, ChevronDown, ChevronUp, Loader2, X } from 'lucide-react';
 
 interface FileUploadProps {
@@ -85,7 +85,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onJobStarted }) => {
     if (endTime) formData.append('end_time', endTime);
 
     try {
-      const response = await axios.post('/api/upload', formData, {
+      const response = await api.post('/api/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (progressEvent) => {
           const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));

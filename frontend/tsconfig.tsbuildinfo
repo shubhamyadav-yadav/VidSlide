@@ -1,1 +1,0 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/downloadbutton.tsx","./src/components/fileupload.tsx","./src/components/interactivepreview.tsx","./src/components/previewgallery.tsx","./src/components/progresspanel.tsx","./src/components/urlinput.tsx","./src/components/videoform.tsx"],"version":"5.9.3"}
