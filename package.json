@@ -4,7 +4,7 @@
   "private": true,
   "description": "VidSlide - Convert Video Lectures & Presentations into Clear Slide Decks",
   "scripts": {
-    "build": "npm --prefix frontend install && npm --prefix frontend run build",
+    "build": "node build.cjs",
     "dev": "npm --prefix frontend run dev",
     "preview": "npm --prefix frontend run preview"
   }
