@@ -1,7 +1,4 @@
 fastapi
 yt-dlp
-opencv-python-headless
-numpy
-slowapi
+Pillow
 python-multipart
-aiofiles

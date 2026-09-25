@@ -3,11 +3,6 @@
   "framework": "vite",
   "buildCommand": "node build.cjs",
   "outputDirectory": "dist",
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 60
-    }
-  },
   "rewrites": [
     {
       "source": "/api/(.*)",
