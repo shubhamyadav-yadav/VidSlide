@@ -1,0 +1,7 @@
+fastapi
+yt-dlp
+opencv-python-headless
+numpy
+slowapi
+python-multipart
+aiofiles

@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { api } from '../api';
+import { startUrlExtractionJob, startUploadExtractionJob } from '../api';
 
 interface VideoFormProps {
   onJobStarted: (jobId: string) => void;
@@ -58,22 +58,17 @@ export const VideoForm: React.FC<VideoFormProps> = ({
         return;
       }
       setIsLoading(true);
-      try {
-        const response = await api.post('/api/process-url', {
-          url: url.trim(),
-          mode: mode === 'scene' ? 'scene_change' : 'interval',
-          sensitivity,
-          interval,
-          quality,
-          start_time: startTime || undefined,
-          end_time: endTime || undefined,
-        });
-        onJobStarted(response.data.job_id);
-      } catch (err: any) {
-        setError(err.response?.data?.detail || err.response?.data?.message || err.message || 'Processing failed');
-      } finally {
-        setIsLoading(false);
-      }
+      const jobId = startUrlExtractionJob({
+        url: url.trim(),
+        mode: mode === 'scene' ? 'scene_change' : 'interval',
+        sensitivity,
+        interval,
+        quality,
+        start_time: startTime || undefined,
+        end_time: endTime || undefined,
+      });
+      setIsLoading(false);
+      onJobStarted(jobId);
     } else {
       if (!file) {
         setError('Please choose or drop a video file');
@@ -88,16 +83,9 @@ export const VideoForm: React.FC<VideoFormProps> = ({
       if (startTime) formData.append('start_time', startTime);
       if (endTime) formData.append('end_time', endTime);
 
-      try {
-        const response = await api.post('/api/upload', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
-        onJobStarted(response.data.job_id);
-      } catch (err: any) {
-        setError(err.response?.data?.message || err.message || 'Upload failed');
-      } finally {
-        setIsLoading(false);
-      }
+      const jobId = startUploadExtractionJob(formData);
+      setIsLoading(false);
+      onJobStarted(jobId);
     }
   };
 

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Download, Check, FileArchive } from 'lucide-react';
-import { getApiUrl } from '../api';
+import { getApiUrl, getClientJob, buildClientZipBlob } from '../api';
 
 interface DownloadButtonProps {
   jobId: string;
@@ -10,12 +10,26 @@ export const DownloadButton: React.FC<DownloadButtonProps> = ({ jobId }) => {
   const [downloadStarted, setDownloadStarted] = useState(false);
 
   const handleDownload = () => {
-    const link = document.createElement('a');
-    link.href = getApiUrl(`/api/download/${jobId}`);
-    link.setAttribute('download', '');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const clientJob = getClientJob(jobId);
+    if (clientJob && clientJob.frames && clientJob.frames.length > 0) {
+      const blob = buildClientZipBlob(clientJob.frames);
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.setAttribute('download', `vidslide_slides_${jobId.slice(-6)}.zip`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    } else {
+      const targetId = clientJob?.serverJobId || jobId;
+      const link = document.createElement('a');
+      link.href = getApiUrl(`/api/download/${targetId}`);
+      link.setAttribute('download', '');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
 
     setDownloadStarted(true);
     setTimeout(() => {
