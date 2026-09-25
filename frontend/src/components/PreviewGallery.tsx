@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { api, getApiUrl, getClientJob } from '../api';
+import { api, getApiUrl } from '../api';
 import { Film, X, ChevronLeft, ChevronRight, Download, ImageIcon, ZoomIn } from 'lucide-react';
 
 interface PreviewGalleryProps {
@@ -26,24 +26,7 @@ export const PreviewGallery: React.FC<PreviewGalleryProps> = ({ jobId }) => {
     let isMounted = true;
     const fetchFrames = async () => {
       try {
-        const clientJob = getClientJob(jobId);
-        if (clientJob && clientJob.frames && clientJob.frames.length > 0) {
-          if (isMounted) {
-            setFrames(clientJob.frames);
-            setLoading(false);
-          }
-          return;
-        }
-
-        const targetId = clientJob?.serverJobId || jobId;
-        const response = await api.get(`/api/frames/${targetId}`);
-        if (response.data?.frame_items && response.data.frame_items.length > 0) {
-          if (isMounted) {
-            setFrames(response.data.frame_items);
-          }
-          return;
-        }
-
+        const response = await api.get(`/api/frames/${jobId}`);
         const frameNames: string[] = response.data?.frames || [];
         const parsedFrames = frameNames.map((name) => {
           let time = name.replace(/^frame_/, '').replace(/\.png$/, '');
@@ -54,7 +37,7 @@ export const PreviewGallery: React.FC<PreviewGalleryProps> = ({ jobId }) => {
           return {
             name,
             time,
-            url: getApiUrl(`/api/frame/${targetId}/${name}`),
+            url: getApiUrl(`/api/frame/${jobId}/${name}`),
           };
         });
 

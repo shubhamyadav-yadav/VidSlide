@@ -56,12 +56,26 @@ if cors_origins_env:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_origin_regex=r"^https://.*\.vercel\.app$",
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_private_network_access_headers(request: Request, call_next):
+    if request.method == "OPTIONS":
+        from fastapi.responses import Response
+        resp = Response(status_code=204)
+        resp.headers["Access-Control-Allow-Origin"] = request.headers.get("origin", "*")
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "*"
+        resp.headers["Access-Control-Allow-Private-Network"] = "true"
+        return resp
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = request.headers.get("origin", "*")
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 jobs = {}
 processing_semaphore = asyncio.Semaphore(3)
@@ -74,7 +88,6 @@ class ProcessURLRequest(BaseModel):
     quality: str = "1080p"
     start_time: Optional[str] = None
     end_time: Optional[str] = None
-    sync: bool = False
 
 def parse_timestamp(ts: str) -> float:
     if not ts:
@@ -86,102 +99,53 @@ def parse_timestamp(ts: str) -> float:
         return float(parts[0]) * 60 + float(parts[1])
     return float(parts[0])
 
-def _encode_frames_as_items(frames_dir: str, frame_files: list[str]) -> list[dict]:
-    """Encode extracted frames as compact JPEG data URLs for stateless serverless delivery."""
-    items = []
-    # Cap inline base64 frames to 40 slides to keep JSON payload well under Vercel's 4.5MB limit
-    selected_files = frame_files[:40]
-    for name in selected_files:
-        fp = safe_path_join(frames_dir, name)
-        if not os.path.exists(fp):
-            continue
-        img = cv2.imread(fp)
-        if img is None:
-            continue
-        ok, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
-        if not ok:
-            continue
-        b64 = base64.b64encode(buf.tobytes()).decode('ascii')
-        time_str = name.replace('frame_', '').replace('.png', '').replace('.jpg', '')
-        m = re.match(r'(\d+)h(\d+)m(\d+)s', time_str) if 're' in globals() else None
-        if not m:
-            import re as _re
-            m = _re.search(r'(\d+)h(\d+)m(\d+)s', time_str)
-        if m:
-            time_str = f"{m.group(1).zfill(2)}:{m.group(2).zfill(2)}:{m.group(3).zfill(2)}"
-        items.append({
-            "name": name,
-            "time": time_str,
-            "url": f"data:image/jpeg;base64,{b64}",
-        })
-    return items
-
 def sync_process_video(job_id, video_path_or_url, is_url, mode, sensitivity, interval, start_time, end_time, temp_dir, quality="1080p"):
     try:
-        frames_dir = safe_path_join(temp_dir, "frames")
-        os.makedirs(frames_dir, exist_ok=True)
-        st = parse_timestamp(start_time) if start_time else 0.0
-        et = parse_timestamp(end_time) if end_time else None
-        frame_paths = None
-
         if is_url:
             jobs[job_id]["status"] = "downloading"
 
             def dl_cb(percent, frames, ts):
                 jobs[job_id]["progress"] = percent
-                jobs[job_id]["frames_found"] = frames
                 jobs[job_id]["message"] = ts
 
-            if IS_VERCEL:
-                # On Vercel Serverless, use the high-speed cloud storyboard & keyframe engine
-                # so 30-minute lectures complete in ~4s without hitting Lambda timeouts or bot blocks
-                frame_paths = extract_frames_from_youtube_storyboard(
-                    video_path_or_url, frames_dir, mode=mode, sensitivity=sensitivity,
-                    interval=interval, start_time=st, end_time=et, progress_callback=dl_cb
-                )
-            else:
-                try:
-                    video_path = download_youtube_video(video_path_or_url, temp_dir, quality=quality, progress_callback=dl_cb)
-                except Exception as dl_err:
-                    # Fallback to storyboard engine if YouTube blocks stream download
-                    frame_paths = extract_frames_from_youtube_storyboard(
-                        video_path_or_url, frames_dir, mode=mode, sensitivity=sensitivity,
-                        interval=interval, start_time=st, end_time=et, progress_callback=dl_cb
-                    )
-                    video_path = None
+            video_path = download_youtube_video(video_path_or_url, temp_dir, quality=quality, progress_callback=dl_cb)
         else:
             video_path = video_path_or_url
 
-        if frame_paths is None:
-            jobs[job_id]["status"] = "extracting"
-            jobs[job_id]["progress"] = 50.0 if is_url else 5.0
-            jobs[job_id]["message"] = "Starting slide scene analysis..."
+        jobs[job_id]["status"] = "extracting"
+        jobs[job_id]["progress"] = 50.0 if is_url else 5.0
+        jobs[job_id]["message"] = "Starting slide scene analysis..."
+        frames_dir = safe_path_join(temp_dir, "frames")
+        os.makedirs(frames_dir, exist_ok=True)
 
-            def ex_cb(percent, frames, ts):
-                if is_url:
-                    overall = 50.0 + (percent * 0.45)
-                else:
-                    overall = percent * 0.95
-                jobs[job_id]["progress"] = round(overall, 1)
-                jobs[job_id]["frames_found"] = frames
-                jobs[job_id]["current_timestamp"] = ts
-                jobs[job_id]["message"] = f"Scanning frame at {ts} ({frames} slides found)"
-
-            if mode == "scene_change":
-                frame_paths = extract_frames_scene_change(video_path, frames_dir, sensitivity, 1.5, st, et, progress_callback=ex_cb)
+        def ex_cb(percent, frames, ts):
+            if is_url:
+                overall = 50.0 + (percent * 0.45)
             else:
-                frame_paths = extract_frames_interval(video_path, frames_dir, interval, st, et, progress_callback=ex_cb)
+                overall = percent * 0.95
+            jobs[job_id]["progress"] = round(overall, 1)
+            jobs[job_id]["frames_found"] = frames
+            jobs[job_id]["current_timestamp"] = ts
+            jobs[job_id]["message"] = f"Scanning frame at {ts} ({frames} slides found)"
 
-            try:
-                if video_path and os.path.exists(video_path):
-                    os.remove(video_path)
-            except Exception:
-                pass
+        st = parse_timestamp(start_time) if start_time else 0.0
+        et = parse_timestamp(end_time) if end_time else None
+
+        if mode == "scene_change":
+            frame_paths = extract_frames_scene_change(video_path, frames_dir, sensitivity, 1.5, st, et, progress_callback=ex_cb)
+        else:
+            frame_paths = extract_frames_interval(video_path, frames_dir, interval, st, et, progress_callback=ex_cb)
 
         frame_files = [os.path.basename(p) for p in frame_paths]
         jobs[job_id]["frames"] = frame_files
         jobs[job_id]["frames_found"] = len(frame_files)
-        jobs[job_id]["frame_items"] = _encode_frames_as_items(frames_dir, frame_files)
+
+        # Reclaim disk space by deleting raw video after extraction
+        try:
+            if video_path and os.path.exists(video_path):
+                os.remove(video_path)
+        except Exception:
+            pass
 
         jobs[job_id]["status"] = "packaging"
         jobs[job_id]["progress"] = 96.0
@@ -226,29 +190,12 @@ async def process_url(request: Request, body: ProcessURLRequest):
         "progress": 0.0,
         "frames_found": 0,
         "frames": [],
-        "frame_items": [],
         "current_timestamp": "",
         "message": "",
         "zip_path": None,
         "temp_dir": temp_dir,
     }
     
-    run_sync = IS_VERCEL or body.sync or (request.query_params.get("sync") == "1")
-    if run_sync:
-        await process_video_task(
-            job_id, url, True, body.mode, body.sensitivity,
-            body.interval, body.start_time, body.end_time, temp_dir, body.quality
-        )
-        if jobs[job_id]["status"] == "failed":
-            raise HTTPException(status_code=400, detail=jobs[job_id]["message"] or "Extraction failed")
-        return {
-            "job_id": job_id,
-            "status": "completed",
-            "count": len(jobs[job_id]["frames"]),
-            "frames": jobs[job_id]["frames"],
-            "frame_items": jobs[job_id].get("frame_items", []),
-        }
-
     asyncio.create_task(
         process_video_task(
             job_id, url, True, body.mode, body.sensitivity, 
@@ -296,29 +243,12 @@ async def upload_file(
         "progress": 0.0,
         "frames_found": 0,
         "frames": [],
-        "frame_items": [],
         "current_timestamp": "",
         "message": "",
         "zip_path": None,
         "temp_dir": temp_dir,
     }
     
-    run_sync = IS_VERCEL or (request.query_params.get("sync") == "1")
-    if run_sync:
-        await process_video_task(
-            job_id, file_path, False, mode, sensitivity,
-            interval, start_time, end_time, temp_dir
-        )
-        if jobs[job_id]["status"] == "failed":
-            raise HTTPException(status_code=400, detail=jobs[job_id]["message"] or "Upload processing failed")
-        return {
-            "job_id": job_id,
-            "status": "completed",
-            "count": len(jobs[job_id]["frames"]),
-            "frames": jobs[job_id]["frames"],
-            "frame_items": jobs[job_id].get("frame_items", []),
-        }
-
     asyncio.create_task(
         process_video_task(
             job_id, file_path, False, mode, sensitivity, 

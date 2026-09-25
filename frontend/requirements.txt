@@ -1,4 +1,0 @@
-fastapi
-yt-dlp
-Pillow
-python-multipart

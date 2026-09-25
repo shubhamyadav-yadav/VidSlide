@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { getApiUrl, getClientJob } from '../api';
+import { getApiUrl } from '../api';
 
 interface ProgressPanelProps {
   jobId: string;
@@ -18,42 +18,15 @@ interface ProgressData {
 
 export const ProgressPanel: React.FC<ProgressPanelProps> = ({ jobId, onCompleted, onFailed }) => {
   const [data, setData] = useState<ProgressData>({
-    status: 'downloading',
-    progress: 6,
+    status: 'idle',
+    progress: 0,
     frames_found: 0,
     current_timestamp: '00:00:00',
-    message: 'Connecting to extraction engine...',
+    message: 'Starting job...',
   });
 
   useEffect(() => {
     if (!jobId) return;
-
-    const initialClientJob = getClientJob(jobId);
-    if (initialClientJob) {
-      let finished = false;
-      const syncFromClient = () => {
-        const cj = getClientJob(jobId);
-        if (!cj || finished) return;
-        setData({
-          status: cj.status,
-          progress: cj.progress,
-          frames_found: cj.frames_found,
-          current_timestamp: cj.current_timestamp,
-          message: cj.message,
-        });
-        if (cj.status === 'completed') {
-          finished = true;
-          onCompleted();
-        } else if (cj.status === 'failed') {
-          finished = true;
-          onFailed(cj.message || 'Extraction failed');
-        }
-      };
-
-      syncFromClient();
-      const timer = setInterval(syncFromClient, 200);
-      return () => clearInterval(timer);
-    }
 
     let isCompletedOrFailed = false;
     const eventSource = new EventSource(getApiUrl(`/api/progress/${jobId}`));
