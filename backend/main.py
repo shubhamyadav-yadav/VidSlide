@@ -489,16 +489,35 @@ async def download_zip(job_id: str):
     )
 
 
+@app.get("/api/job-status/{job_id}")
+async def get_job_status(job_id: str):
+    job = _get_validated_job(job_id)
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "pending"),
+        "progress": job.get("progress", 0.0),
+        "frames_found": job.get("frames_found", 0),
+        "current_timestamp": job.get("current_timestamp", "00:00:00"),
+        "message": job.get("message", ""),
+        "frames": job.get("frames", []),
+        "count": len(job.get("frames", [])),
+    }
+
+
 @app.get("/api/frames/{job_id}")
 async def get_job_frames(job_id: str):
     job = _get_validated_job(job_id)
     return {
         "job_id": job_id,
-        "status": job["status"],
+        "status": job.get("status", "pending"),
+        "progress": job.get("progress", 0.0),
+        "frames_found": job.get("frames_found", 0),
+        "current_timestamp": job.get("current_timestamp", "00:00:00"),
         "message": job.get("message", ""),
         "frames": job.get("frames", []),
         "count": len(job.get("frames", [])),
     }
+
 
 
 @app.get("/api/frame/{job_id}/{frame_name}")

@@ -54,39 +54,41 @@ export const ProgressPanel: React.FC<ProgressPanelProps> = ({ jobId, onCompleted
       console.warn('EventSource reconnecting/error:', err);
     };
 
-    // Polling fallback to guarantee state synchronization even if SSE is buffered
+    // Polling guarantee: updates progress, message, and timestamp every 1s even if SSE is buffered by proxies
     const pollTimer = setInterval(async () => {
       if (isCompletedOrFailed) {
         clearInterval(pollTimer);
         return;
       }
       try {
-        const res = await fetch(getApiUrl(`/api/frames/${jobId}`));
+        const res = await fetch(getApiUrl(`/api/job-status/${jobId}`));
         if (res.ok) {
-          const frameData = await res.json();
-          if (frameData.status === 'completed') {
+          const statusData = await res.json();
+          setData((prev) => ({
+            ...prev,
+            status: statusData.status || prev.status,
+            progress: typeof statusData.progress === 'number' ? statusData.progress : prev.progress,
+            frames_found: typeof statusData.frames_found === 'number' ? statusData.frames_found : prev.frames_found,
+            current_timestamp: statusData.current_timestamp || prev.current_timestamp,
+            message: statusData.message || prev.message,
+          }));
+
+          if (statusData.status === 'completed') {
             isCompletedOrFailed = true;
             clearInterval(pollTimer);
             eventSource.close();
-            setData(prev => ({
-              ...prev,
-              status: 'completed',
-              progress: 100,
-              frames_found: frameData.count || frameData.frames?.length || prev.frames_found,
-              message: `Extracted ${frameData.count || frameData.frames?.length || 0} slides successfully!`
-            }));
             onCompleted();
-          } else if (frameData.status === 'failed') {
+          } else if (statusData.status === 'failed') {
             isCompletedOrFailed = true;
             clearInterval(pollTimer);
             eventSource.close();
-            onFailed(frameData.message || 'Job failed');
+            onFailed(statusData.message || 'Job failed');
           }
         }
       } catch {
         // ignore polling network errors
       }
-    }, 1500);
+    }, 1000);
 
     return () => {
       clearInterval(pollTimer);
