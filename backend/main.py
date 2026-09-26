@@ -82,9 +82,10 @@ if cors_origins_env:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"^https://.*\.vercel\.app$|^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept", "Authorization"],
+    allow_headers=["*"],
 )
 
 
@@ -92,7 +93,13 @@ def _is_allowed_origin(origin: str) -> bool:
     if not origin:
         return False
     clean = origin.rstrip("/")
-    return clean in allowed_origins
+    if clean in allowed_origins:
+        return True
+    if clean.startswith("https://") and clean.endswith(".vercel.app"):
+        return True
+    if "localhost" in clean or "127.0.0.1" in clean:
+        return True
+    return False
 
 
 @app.middleware("http")

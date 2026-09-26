@@ -82,7 +82,11 @@ export const VideoForm: React.FC<VideoFormProps> = ({
         });
         onJobStarted(response.data.job_id);
       } catch (err: any) {
-        setError(err.response?.data?.detail || err.response?.data?.message || err.message || 'Processing failed');
+        if (err.message === 'Network Error' || !err.response) {
+          setError('Backend engine is unreachable. Please verify the Python OpenCV server is running on your machine or open http://localhost:5173');
+        } else {
+          setError(err.response?.data?.detail || err.response?.data?.message || err.message || 'Processing failed');
+        }
       } finally {
         setIsLoading(false);
       }
@@ -106,7 +110,11 @@ export const VideoForm: React.FC<VideoFormProps> = ({
         });
         onJobStarted(response.data.job_id);
       } catch (err: any) {
-        setError(err.response?.data?.detail || err.response?.data?.message || err.message || 'Upload failed');
+        if (err.message === 'Network Error' || !err.response) {
+          setError('Backend engine is unreachable. Please verify the Python OpenCV server is running on your machine or open http://localhost:5173');
+        } else {
+          setError(err.response?.data?.detail || err.response?.data?.message || err.message || 'Upload failed');
+        }
       } finally {
         setIsLoading(false);
       }

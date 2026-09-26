@@ -1,7 +1,9 @@
 import axios from 'axios';
 
 const CANDIDATE_BACKENDS = [
+  (typeof window !== 'undefined' ? localStorage.getItem('vidslide_backend_url') : null),
   import.meta.env.VITE_API_URL,
+  'https://src-returned-unity-mobiles.trycloudflare.com',
   'http://127.0.0.1:8000',
   'http://localhost:8000',
 ].filter((u): u is string => Boolean(u && u.trim()));
@@ -36,7 +38,7 @@ export async function ensureBackendUrl(): Promise<string> {
       const clean = candidate.replace(/\/+$/, '');
       try {
         const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), 2500);
+        const tid = setTimeout(() => controller.abort(), 4000);
         const res = await fetch(`${clean}/api/health`, {
           method: 'GET',
           signal: controller.signal,
@@ -52,9 +54,9 @@ export async function ensureBackendUrl(): Promise<string> {
       }
     }
 
-    // Default to local port 8000 if on Vercel and probing is still warming up
+    // If on Vercel (HTTPS), default to the stable Cloudflare tunnel
     if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
-      resolvedBaseUrl = 'http://127.0.0.1:8000';
+      resolvedBaseUrl = 'https://src-returned-unity-mobiles.trycloudflare.com';
       api.defaults.baseURL = resolvedBaseUrl;
       return resolvedBaseUrl;
     }
