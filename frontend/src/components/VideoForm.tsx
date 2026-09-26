@@ -54,6 +54,16 @@ export const VideoForm: React.FC<VideoFormProps> = ({
 
     await ensureBackendUrl();
 
+    const timestampRegex = /^\d{1,3}(:\d{1,2}){0,2}(\.\d+)?$/;
+    if (startTime.trim() && !timestampRegex.test(startTime.trim())) {
+      setError('Start time must be formatted as HH:MM:SS or MM:SS (e.g. 00:01:30)');
+      return;
+    }
+    if (endTime.trim() && !timestampRegex.test(endTime.trim())) {
+      setError('End time must be formatted as HH:MM:SS or MM:SS (e.g. 00:15:00)');
+      return;
+    }
+
     if (activeTab === 'url') {
       if (!url.trim()) {
         setError('Please enter a YouTube video URL');
@@ -67,8 +77,8 @@ export const VideoForm: React.FC<VideoFormProps> = ({
           sensitivity,
           interval,
           quality,
-          start_time: startTime || undefined,
-          end_time: endTime || undefined,
+          start_time: startTime.trim() || undefined,
+          end_time: endTime.trim() || undefined,
         });
         onJobStarted(response.data.job_id);
       } catch (err: any) {
@@ -87,8 +97,8 @@ export const VideoForm: React.FC<VideoFormProps> = ({
       formData.append('mode', mode === 'scene' ? 'scene_change' : 'interval');
       if (mode === 'scene') formData.append('sensitivity', sensitivity);
       if (mode === 'fixed') formData.append('interval', interval.toString());
-      if (startTime) formData.append('start_time', startTime);
-      if (endTime) formData.append('end_time', endTime);
+      if (startTime.trim()) formData.append('start_time', startTime.trim());
+      if (endTime.trim()) formData.append('end_time', endTime.trim());
 
       try {
         const response = await api.post('/api/upload', formData, {
@@ -96,7 +106,7 @@ export const VideoForm: React.FC<VideoFormProps> = ({
         });
         onJobStarted(response.data.job_id);
       } catch (err: any) {
-        setError(err.response?.data?.message || err.message || 'Upload failed');
+        setError(err.response?.data?.detail || err.response?.data?.message || err.message || 'Upload failed');
       } finally {
         setIsLoading(false);
       }

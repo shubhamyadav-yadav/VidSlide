@@ -198,3 +198,77 @@ async def test_api_frames_unknown_job():
         response = await ac.get("/api/frames/nonexistent")
         assert response.status_code == 404
 
+
+def test_validate_job_id():
+    from security import validate_job_id
+    import uuid
+    valid_uuid = str(uuid.uuid4())
+    assert validate_job_id(valid_uuid) == valid_uuid
+
+    for bad_id in ("../../etc/passwd", "not-a-uuid", "", "12345", "<script>alert(1)</script>"):
+        with pytest.raises(ValueError):
+            validate_job_id(bad_id)
+
+
+def test_validate_video_magic_bytes():
+    from security import validate_video_magic_bytes
+    # Valid MP4 header with 'ftyp'
+    valid_mp4_header = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00"
+    validate_video_magic_bytes(valid_mp4_header)
+
+    # Valid WebM/MKV header with EBML magic
+    valid_mkv_header = b"\x1a\x45\xdf\xa3\x93\x42\x86\x81\x01\x42\xf7\x81\x01"
+    validate_video_magic_bytes(valid_mkv_header)
+
+    # Invalid header (e.g. PHP script or plain text)
+    with pytest.raises(ValueError):
+        validate_video_magic_bytes(b"<?php echo 'hello'; ?>")
+    with pytest.raises(ValueError):
+        validate_video_magic_bytes(b"")
+
+
+def test_parse_and_validate_timestamp():
+    from security import parse_and_validate_timestamp
+    assert parse_and_validate_timestamp(None) is None
+    assert parse_and_validate_timestamp("") is None
+    assert parse_and_validate_timestamp("01:30:15") == 5415.0
+    assert parse_and_validate_timestamp("05:30") == 330.0
+    assert parse_and_validate_timestamp("45") == 45.0
+
+    with pytest.raises(ValueError):
+        parse_and_validate_timestamp("invalid_time")
+    with pytest.raises(ValueError):
+        parse_and_validate_timestamp("-10")
+
+
+@pytest.mark.asyncio
+async def test_security_headers_present():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/api/health")
+        assert response.status_code == 200
+        assert response.headers.get("x-content-type-options") == "nosniff"
+        assert response.headers.get("x-frame-options") == "DENY"
+        assert "origin" in response.headers.get("referrer-policy", "")
+
+
+@pytest.mark.asyncio
+async def test_debug_endpoint_removed():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/api/debug/jobs")
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_upload_invalid_magic_bytes_rejected():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # File has .mp4 extension but contains fake text/script content
+        fake_content = b"This is not a video file, it's plain text pretending to be MP4!"
+        response = await ac.post(
+            "/api/upload",
+            files={"file": ("fake.mp4", fake_content, "video/mp4")},
+            data={"mode": "scene_change", "sensitivity": "medium", "interval": 5.0},
+        )
+        assert response.status_code == 400
+        assert "signature" in response.json().get("detail", "").lower()
+
+

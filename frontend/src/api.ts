@@ -4,7 +4,6 @@ const CANDIDATE_BACKENDS = [
   import.meta.env.VITE_API_URL,
   'http://127.0.0.1:8000',
   'http://localhost:8000',
-  'https://75c66838de9bdd.lhr.life',
 ].filter((u): u is string => Boolean(u && u.trim()));
 
 let resolvedBaseUrl: string = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
