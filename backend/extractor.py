@@ -20,6 +20,11 @@ try:
 except Exception:
     FFMPEG_EXE = shutil.which("ffmpeg")
 
+if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
+    _ffmpeg_dir = os.path.dirname(FFMPEG_EXE)
+    if _ffmpeg_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+
 
 def download_youtube_video(
     url: str, 
@@ -56,8 +61,8 @@ def download_youtube_video(
                 except ValueError:
                     raw_pct = 0.0
 
-            # Map download to 5% - 50% of overall process
-            overall_pct = 5.0 + (raw_pct * 0.45)
+            # Map download cleanly from 10% - 50% without dipping backwards
+            overall_pct = round(10.0 + (raw_pct * 0.40), 1)
             speed_str = d.get('_speed_str', '').strip()
             msg = f"Downloading video: {raw_pct:.0f}%"
             if speed_str:
@@ -74,6 +79,8 @@ def download_youtube_video(
                 
     ydl_opts = {
         'format': (
+            f'bestvideo[height<={max_height}][ext=mp4][vcodec^=avc1]/'
+            f'bestvideo[height<={max_height}][vcodec^=avc1]/'
             f'bestvideo[height<={max_height}][ext=mp4]/'
             f'bestvideo[height<={max_height}]/'
             f'bestvideo[height<=720][ext=mp4]/'
@@ -185,65 +192,194 @@ def _hamming_distance(h1: np.ndarray, h2: np.ndarray) -> float:
     return float(np.count_nonzero(h1 != h2)) / len(h1)
 
 
-def _compare_frames(gray1: np.ndarray, gray2: np.ndarray) -> dict:
+_COMPARE_SIZE = (480, 270)
+_CANNY_KERNEL = np.ones((3, 3), np.uint8)
+
+
+def _extract_features(frame: np.ndarray, compute_hash: bool = True) -> dict:
     """
-    Multi-metric comparison between two grayscale images of the same size.
-    Returns dict with 'mean_diff', 'max_region_diff', 'hash_dist'.
+    Extract lightweight grayscale, edge mask, dilated edge mask, and optional
+    perceptual hash from a full-resolution video frame for accurate slide comparison.
     """
-    # 1) Global mean absolute difference
-    diff = cv2.absdiff(gray1, gray2)
+    small = cv2.resize(frame, _COMPARE_SIZE, interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150) > 0
+    edges_dil = cv2.dilate(edges.astype(np.uint8), _CANNY_KERNEL) > 0
+    return {
+        'gray': gray,
+        'edges': edges,
+        'edges_dil': edges_dil,
+        'edge_count': int(np.count_nonzero(edges)),
+        'phash': _phash(gray) if compute_hash else None,
+    }
+
+
+def _compare_features(f1: dict, f2: dict) -> dict:
+    """
+    Compare precomputed slide feature dictionaries using changed-pixel ratio,
+    4x4 grid regional changes, edge disappearance (new slide vs ink overlay),
+    and edge appearance (incremental bullet builds).
+    """
+    g1, g2 = f1['gray'], f2['gray']
+    diff = cv2.absdiff(g1, g2)
     mean_diff = float(np.mean(diff))
-    
-    # 2) Block-based maximum difference (catches small region changes like a single
-    #    bullet point appearing on a slide)
+    changed_mask = diff > 25
+    changed_ratio = float(np.count_nonzero(changed_mask)) / diff.size
+
     h, w = diff.shape
-    block_h, block_w = max(1, h // 4), max(1, w // 4)
-    max_block_diff = 0.0
+    bh, bw = max(1, h // 4), max(1, w // 4)
+    max_block_chg = 0.0
+    active_blocks = 0
     for r in range(4):
         for c in range(4):
-            block = diff[r*block_h:(r+1)*block_h, c*block_w:(c+1)*block_w]
-            block_mean = float(np.mean(block))
-            max_block_diff = max(max_block_diff, block_mean)
-    
-    # 3) Perceptual hash distance
-    h1 = _phash(gray1)
-    h2 = _phash(gray2)
-    hash_dist = _hamming_distance(h1, h2)
-    
+            blk = changed_mask[r * bh:(r + 1) * bh, c * bw:(c + 1) * bw]
+            ratio = float(np.count_nonzero(blk)) / max(1, blk.size)
+            if ratio > max_block_chg:
+                max_block_chg = ratio
+            if ratio > 0.025:
+                active_blocks += 1
+
+    e1_cnt = f1['edge_count']
+    e2_cnt = f2['edge_count']
+    if e1_cnt >= 40:
+        edge_dis = float(np.count_nonzero(f1['edges'] & (~f2['edges_dil']))) / e1_cnt
+    else:
+        edge_dis = changed_ratio
+
+    if e2_cnt >= 40:
+        edge_app = float(np.count_nonzero(f2['edges'] & (~f1['edges_dil']))) / e2_cnt
+    else:
+        edge_app = changed_ratio
+
+    hash_dist = None
+    if f1['phash'] is not None and f2['phash'] is not None:
+        hash_dist = _hamming_distance(f1['phash'], f2['phash'])
+
     return {
         'mean_diff': mean_diff,
-        'max_region_diff': max_block_diff,
+        'changed_ratio': changed_ratio,
+        'max_block_chg': max_block_chg,
+        'active_blocks': active_blocks,
+        'edge_dis': edge_dis,
+        'edge_app': edge_app,
         'hash_dist': hash_dist,
     }
 
 
+def _compare_frames(gray1: np.ndarray, gray2: np.ndarray) -> dict:
+    """Compatibility helper comparing two pre-resized grayscale frames."""
+    e1 = cv2.Canny(gray1, 50, 150) > 0
+    e2 = cv2.Canny(gray2, 50, 150) > 0
+    f1 = {
+        'gray': gray1,
+        'edges': e1,
+        'edges_dil': cv2.dilate(e1.astype(np.uint8), _CANNY_KERNEL) > 0,
+        'edge_count': int(np.count_nonzero(e1)),
+        'phash': _phash(gray1),
+    }
+    f2 = {
+        'gray': gray2,
+        'edges': e2,
+        'edges_dil': cv2.dilate(e2.astype(np.uint8), _CANNY_KERNEL) > 0,
+        'edge_count': int(np.count_nonzero(e2)),
+        'phash': _phash(gray2),
+    }
+    return _compare_features(f1, f2)
+
+
 def _is_significant_change(metrics: dict, sensitivity: str) -> bool:
     """
-    Determine if a frame change is significant enough to be a new slide.
-    Uses multiple metrics to avoid false positives from speaker movement
-    and false negatives from subtle slide changes.
+    Determine whether the visual change represents a real slide transition or
+    meaningful content step while filtering minor annotations, cursor movement,
+    single-corner presenter webcam motion, and translucent scrim overlays.
     """
-    # Thresholds tuned per sensitivity level
-    # Format: (mean_diff_threshold, max_region_threshold, hash_dist_threshold)
-    # A change is significant if EITHER the global diff OR the hash distance exceeds threshold
-    configs = {
-        "low":    {"mean": 30, "region": 50, "hash": 0.25},
-        "medium": {"mean": 15, "region": 30, "hash": 0.15},
-        "high":   {"mean": 8,  "region": 18, "hash": 0.08},
-    }
-    cfg = configs.get(sensitivity.lower(), configs["medium"])
-    
-    # Primary: global mean difference shows a big visual change
-    global_change = metrics['mean_diff'] > cfg['mean']
-    
-    # Secondary: a region changed significantly (catches bullet-point additions)
-    region_change = metrics['max_region_diff'] > cfg['region']
-    
-    # Tertiary: perceptual hash says the structure changed
-    hash_change = metrics['hash_dist'] > cfg['hash']
-    
-    # Trigger if global change is strong, OR if both region and hash agree
-    return global_change or (region_change and hash_change)
+    s = sensitivity.lower()
+    # Ignore translucent dimming overlays (e.g. OS control center) where background darkens
+    # uniformly across the screen while underlying slide text edges stay mostly intact.
+    if metrics['changed_ratio'] > 0.60 and metrics['edge_dis'] < 0.12 and metrics['edge_app'] < 0.25:
+        return False
+
+    if s == "low":
+        new_slide = (
+            metrics['edge_dis'] >= 0.18
+            and metrics['edge_app'] >= 0.18
+            and metrics['changed_ratio'] >= 0.025
+        )
+        visual_swap = (
+            metrics['changed_ratio'] >= 0.14
+            and metrics['active_blocks'] >= 4
+            and metrics['edge_dis'] >= 0.10
+        )
+        spread_content_swap = (
+            metrics['changed_ratio'] >= 0.03
+            and metrics['max_block_chg'] >= 0.14
+            and metrics['active_blocks'] >= 5
+            and (metrics['edge_dis'] >= 0.05 or metrics['edge_app'] >= 0.15)
+        )
+        return new_slide or visual_swap or spread_content_swap
+
+    if s == "high":
+        new_slide = (
+            metrics['edge_dis'] >= 0.12
+            and metrics['changed_ratio'] >= 0.015
+            and metrics['active_blocks'] >= 2
+        )
+        visual_swap = metrics['changed_ratio'] >= 0.06 and metrics['active_blocks'] >= 3
+        subtle_build = (
+            (metrics['edge_app'] >= 0.14 or metrics['edge_dis'] >= 0.08)
+            and metrics['max_block_chg'] >= 0.030
+            and metrics['changed_ratio'] >= 0.004
+            and metrics['active_blocks'] >= 2
+        )
+        return new_slide or visual_swap or subtle_build
+
+    # Medium (default): balanced capture of every distinct slide + multi-line/code builds
+    new_slide = (
+        metrics['edge_dis'] >= 0.16
+        and metrics['edge_app'] >= 0.16
+        and metrics['changed_ratio'] >= 0.025
+    )
+    visual_swap = (
+        metrics['changed_ratio'] >= 0.10
+        and metrics['active_blocks'] >= 4
+        and metrics['edge_dis'] >= 0.08
+    )
+    spread_content_swap = (
+        metrics['changed_ratio'] >= 0.028
+        and metrics['max_block_chg'] >= 0.12
+        and metrics['active_blocks'] >= 4
+        and (metrics['edge_dis'] >= 0.05 or metrics['edge_app'] >= 0.14)
+    )
+    content_add = (
+        metrics['edge_app'] >= 0.28
+        and metrics['changed_ratio'] >= 0.0045
+        and metrics['max_block_chg'] >= 0.045
+        and metrics['active_blocks'] >= 2
+    )
+    return new_slide or visual_swap or spread_content_swap or content_add
+
+
+def _is_duplicate_of_saved(cand_feat: dict, saved_feats: list[dict], sensitivity: str) -> bool:
+    """Check if candidate matches a previously saved slide (e.g. presenter flipped back briefly)."""
+    s = sensitivity.lower()
+    for prev in saved_feats:
+        m = _compare_features(prev, cand_feat)
+        if m['changed_ratio'] >= 0.03 and m['max_block_chg'] >= 0.12 and m['active_blocks'] >= 4:
+            continue
+        if s == "high":
+            if m['edge_dis'] < 0.08 and m['edge_app'] < 0.10 and m['changed_ratio'] < 0.015:
+                return True
+        else:
+            if m['edge_dis'] < 0.14 and m['changed_ratio'] < 0.08 and m['edge_app'] < 0.25:
+                return True
+            if (
+                m['hash_dist'] is not None
+                and m['hash_dist'] < 0.05
+                and m['edge_dis'] < 0.15
+                and m['edge_app'] < 0.22
+            ):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -262,22 +398,13 @@ def extract_frames_scene_change(
     """
     Extracts complete, non-cut slide screenshots using a three-phase approach:
     
-    1. DETECT: Identify when a significant visual change occurs between frames.
-    2. SETTLE: After detecting a change, continue reading frames until the scene
-       stabilizes (consecutive frames become similar again). This ensures we skip
-       transition animations, fades, and slide-build effects.
-    3. CAPTURE: Save the first fully-stable frame after the transition completes.
-    
-    Additionally performs post-capture deduplication using perceptual hashing
-    to remove near-identical frames that survived the detection phase.
+    1. DETECT: Identify when significant structural/edge changes occur from the current slide.
+    2. SETTLE: Wait until the frame stabilizes for a continuous dwell window (~0.75s)
+       so wipe/fade animations finish and brief accidental flicks are ignored, while
+       bounding settling duration so corner webcam motion never stalls capture.
+    3. CAPTURE: Verify uniqueness against previously captured slides and save the
+       full-resolution PNG frame.
     """
-    COMPARE_SIZE = (480, 270)  # Larger comparison size for better accuracy
-    
-    # How many consecutive "stable" frames we need before considering the slide settled
-    SETTLE_FRAMES = 3
-    # Maximum diff between consecutive frames to consider them "stable"
-    SETTLE_THRESHOLD = 5.0  # Very low - frames must be nearly identical
-    
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Failed to open video file")
@@ -287,30 +414,39 @@ def extract_frames_scene_change(
         fps = 30.0
         
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    video_duration = (total_frames / fps) if total_frames > 0 else 0
+    video_duration = (total_frames / fps) if total_frames > 0 else 0.0
+    effective_end = end_time if (end_time is not None and end_time > 0) else video_duration
+    duration_range = max(0.1, (effective_end - start_time)) if effective_end > start_time else max(0.1, video_duration)
     
     if start_time > 0:
-        cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
+        cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000.0)
         
-    # State
-    saved_paths = []
-    saved_hashes = []   # pHash of each saved frame for dedup
-    saved_count = 0
-    last_saved_time = -min_gap
+    saved_paths: list[str] = []
+    saved_feats: list[dict] = []
+    current_scene_feat: Optional[dict] = None
+    last_saved_time = start_time - min_gap
     frame_count = 0
     
-    # The "reference" frame is the last captured stable slide
-    reference_gray = None
+    sample_step = max(1, round(fps / 4.0))  # 4 Hz scan
+    settle_step = max(1, round(fps / 5.0))  # 5 Hz settle check
+
+    INITIAL_SETTLE_SEC = 0.35
+    SETTLE_HOLD_SEC = 0.75
+    SETTLE_MAX_SEC = 3.0
     
-    # Sampling: process ~4-6 frames per second for speed
-    sample_step = max(1, int(fps / 5.0))
-    
-    # Track whether we're in "settling" mode
     settling = False
-    settle_counter = 0
+    settle_start_time = 0.0
+    stable_since_time = 0.0
     settle_prev_gray = None
-    settle_candidate_frame = None
-    settle_candidate_time = 0.0
+    settle_best_frame = None
+    settle_best_time = 0.0
+    settle_min_step_diff = float('inf')
+
+    def _save_frame(frame_img: np.ndarray, ts_sec: float) -> str:
+        filename = generate_frame_filename(max(0.0, ts_sec))
+        filepath = safe_path_join(output_dir, filename)
+        cv2.imwrite(filepath, frame_img)
+        return filepath
     
     while True:
         ret = cap.grab()
@@ -318,143 +454,147 @@ def extract_frames_scene_change(
             break
             
         frame_count += 1
-        current_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        approx_time = start_time + (frame_count / fps)
         
-        if end_time is not None and current_time > end_time:
+        if end_time is not None and approx_time > end_time + 1.0:
             break
         
-        # When settling, decode every frame to find the stable point quickly
-        # When scanning, only decode at sample intervals
-        if not settling:
-            is_sample = (frame_count % sample_step == 0) or (saved_count == 0)
-            if not is_sample:
+        if settling:
+            if frame_count % settle_step != 0:
+                continue
+        else:
+            if (frame_count % sample_step != 0) and (current_scene_feat is not None):
                 continue
         
         ret, frame = cap.retrieve()
         if not ret or frame is None:
             continue
+
+        actual_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+        current_time = (actual_msec / 1000.0) if actual_msec > 0 else approx_time
+        if start_time > 0 and current_time < start_time - 0.2:
+            continue
+        if end_time is not None and current_time > end_time:
+            break
             
-        # Downscale for comparison (larger than before for better accuracy)
-        small = cv2.resize(frame, COMPARE_SIZE, interpolation=cv2.INTER_AREA)
+        small = cv2.resize(frame, _COMPARE_SIZE, interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
         
-        # === PHASE 1: First frame capture ===
-        if saved_count == 0 and reference_gray is None:
-            # Wait a tiny bit for the video to start properly, then capture
-            if current_time >= start_time + 0.1 or frame_count > 3:
-                settling = True
-                settle_counter = 0
-                settle_prev_gray = gray.copy()
-                settle_candidate_frame = frame.copy()
-                settle_candidate_time = current_time
-                # For the very first frame, consider it a settle start
-                if saved_count == 0:
-                    # Immediately capture the first frame since there's no transition
-                    settle_counter = SETTLE_FRAMES
-        
-        # === PHASE 2: Settling mode - waiting for transition to end ===
-        if settling:
-            if settle_prev_gray is not None:
-                diff_from_prev = cv2.absdiff(gray, settle_prev_gray)
-                mean_diff_from_prev = float(np.mean(diff_from_prev))
-                
-                if mean_diff_from_prev < SETTLE_THRESHOLD:
-                    # Frame is stable relative to previous
-                    settle_counter += 1
-                    # Update candidate to the latest stable frame (best quality)
-                    settle_candidate_frame = frame.copy()
-                    settle_candidate_time = current_time
-                else:
-                    # Still transitioning - reset counter
-                    settle_counter = 0
-                    settle_candidate_frame = frame.copy()
-                    settle_candidate_time = current_time
-            
+        # === PHASE 1: Initial slide capture ===
+        if not settling and current_scene_feat is None:
+            settling = True
+            settle_start_time = current_time
+            stable_since_time = current_time
             settle_prev_gray = gray.copy()
-            
-            if settle_counter >= SETTLE_FRAMES:
-                # === PHASE 3: Slide has settled - CAPTURE ===
-                # Check it's not a duplicate of an already-saved frame
-                candidate_gray = cv2.cvtColor(
-                    cv2.resize(settle_candidate_frame, COMPARE_SIZE, interpolation=cv2.INTER_AREA),
-                    cv2.COLOR_BGR2GRAY
-                )
-                candidate_hash = _phash(candidate_gray)
-                
-                is_duplicate = False
-                for prev_hash in saved_hashes:
-                    if _hamming_distance(candidate_hash, prev_hash) < 0.08:
-                        is_duplicate = True
-                        break
-                
-                if not is_duplicate and (settle_candidate_time - last_saved_time) >= min_gap:
-                    filename = generate_frame_filename(settle_candidate_time)
-                    filepath = safe_path_join(output_dir, filename)
-                    cv2.imwrite(filepath, settle_candidate_frame)
-                    saved_paths.append(filepath)
-                    saved_hashes.append(candidate_hash)
-                    last_saved_time = settle_candidate_time
-                    saved_count += 1
-                    reference_gray = candidate_gray.copy()
-                
-                # Exit settling mode
+            settle_best_frame = frame.copy()
+            settle_best_time = current_time
+            settle_min_step_diff = float('inf')
+            continue
+        
+        # === PHASE 2: Settling mode ===
+        if settling:
+            diff_step = cv2.absdiff(gray, settle_prev_gray)
+            step_mean = float(np.mean(diff_step))
+            step_chg = float(np.count_nonzero(diff_step > 20)) / diff_step.size
+
+            h, w = diff_step.shape
+            bh, bw = max(1, h // 4), max(1, w // 4)
+            moving_blocks = sum(
+                1
+                for r in range(4)
+                for c in range(4)
+                if float(np.count_nonzero(diff_step[r * bh:(r + 1) * bh, c * bw:(c + 1) * bw] > 20))
+                / max(1, bh * bw)
+                > 0.03
+            )
+
+            is_stable = (step_chg < 0.015 and step_mean < 3.5) or (
+                moving_blocks <= 2 and step_chg < 0.06 and step_mean < 6.0
+            )
+            if is_stable:
+                settle_best_frame = frame.copy()
+                settle_best_time = current_time
+            else:
+                stable_since_time = current_time
+                if step_mean < settle_min_step_diff:
+                    settle_min_step_diff = step_mean
+                    settle_best_frame = frame.copy()
+                    settle_best_time = current_time
+
+            settle_prev_gray = gray.copy()
+            stable_duration = current_time - stable_since_time
+            total_settle = current_time - settle_start_time
+            required_hold = INITIAL_SETTLE_SEC if len(saved_feats) == 0 else SETTLE_HOLD_SEC
+
+            if stable_duration >= required_hold or total_settle >= SETTLE_MAX_SEC:
+                cand_feat = _extract_features(settle_best_frame, compute_hash=True)
+                if len(saved_feats) == 0:
+                    fpath = _save_frame(settle_best_frame, settle_best_time)
+                    saved_paths.append(fpath)
+                    saved_feats.append(cand_feat)
+                    current_scene_feat = cand_feat
+                    last_saved_time = settle_best_time
+                else:
+                    m_cur = _compare_features(current_scene_feat, cand_feat)
+                    if _is_significant_change(m_cur, sensitivity):
+                        if not _is_duplicate_of_saved(cand_feat, saved_feats, sensitivity):
+                            if (settle_best_time - last_saved_time) >= min_gap:
+                                fpath = _save_frame(settle_best_frame, settle_best_time)
+                                saved_paths.append(fpath)
+                                saved_feats.append(cand_feat)
+                                last_saved_time = settle_best_time
+                        current_scene_feat = cand_feat
+
                 settling = False
-                settle_counter = 0
-                settle_prev_gray = None
-                settle_candidate_frame = None
+                settle_best_frame = None
                 continue
-        
-        # === PHASE 1 continued: Detect significant change from last saved slide ===
-        if not settling and reference_gray is not None:
-            metrics = _compare_frames(reference_gray, gray)
-            
-            if _is_significant_change(metrics, sensitivity):
-                if (current_time - last_saved_time) >= min_gap:
-                    # Enter settling mode - don't capture yet!
+        else:
+            # === PHASE 1 continued: Fast-skip unchanged frames ===
+            fast_diff = cv2.absdiff(gray, current_scene_feat['gray'])
+            fast_chg = float(np.count_nonzero(fast_diff > 25)) / fast_diff.size
+            if fast_chg >= 0.003:
+                feat = _extract_features(frame, compute_hash=False)
+                metrics = _compare_features(current_scene_feat, feat)
+                if _is_significant_change(metrics, sensitivity) and (current_time - last_saved_time) >= min_gap:
                     settling = True
-                    settle_counter = 0
+                    settle_start_time = current_time
+                    stable_since_time = current_time
                     settle_prev_gray = gray.copy()
-                    settle_candidate_frame = frame.copy()
-                    settle_candidate_time = current_time
-        
+                    settle_best_frame = frame.copy()
+                    settle_best_time = current_time
+                    settle_min_step_diff = float('inf')
+
         # Progress reporting
         if progress_callback and (frame_count % (sample_step * 5) == 0):
-            current_frame_idx = cap.get(cv2.CAP_PROP_POS_FRAMES)
-            percent = (current_frame_idx / total_frames * 100.0) if total_frames > 0 else 0
+            percent = ((current_time - start_time) / duration_range) * 100.0
             percent = min(99.0, max(0.0, percent))
-            
+
             hours = int(current_time // 3600)
             minutes = int((current_time % 3600) // 60)
             secs = int(current_time % 60)
             ts_str = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+            progress_callback(percent, len(saved_paths), ts_str)
             
-            progress_callback(percent, saved_count, ts_str)
-            
+    # Handle end-of-video settling: capture final valid slide if clip ended before full hold
+    if settling and settle_best_frame is not None:
+        total_settle = settle_best_time - settle_start_time
+        if len(saved_paths) == 0:
+            fpath = _save_frame(settle_best_frame, settle_best_time)
+            saved_paths.append(fpath)
+        elif total_settle >= 1.0 and (settle_best_time - last_saved_time) >= min_gap:
+            cand_feat = _extract_features(settle_best_frame, compute_hash=True)
+            m_cur = _compare_features(current_scene_feat, cand_feat)
+            if _is_significant_change(m_cur, sensitivity) and not _is_duplicate_of_saved(
+                cand_feat, saved_feats, sensitivity
+            ):
+                fpath = _save_frame(settle_best_frame, settle_best_time)
+                saved_paths.append(fpath)
+
     cap.release()
     
-    # Post-processing: deduplicate very similar consecutive frames
-    # (handles edge cases where settling captured nearly-identical slides)
-    if len(saved_paths) > 1:
-        final_paths = [saved_paths[0]]
-        final_hashes = [saved_hashes[0]]
-        
-        for i in range(1, len(saved_paths)):
-            dist = _hamming_distance(saved_hashes[i], final_hashes[-1])
-            if dist >= 0.06:  # Keep only frames that are meaningfully different
-                final_paths.append(saved_paths[i])
-                final_hashes.append(saved_hashes[i])
-            else:
-                # Remove the duplicate file from disk
-                try:
-                    os.remove(saved_paths[i])
-                except OSError:
-                    pass
-        
-        saved_paths = final_paths
-        saved_count = len(saved_paths)
-    
     if progress_callback:
-        progress_callback(100.0, saved_count, "Done")
+        progress_callback(100.0, len(saved_paths), "Done")
         
     return saved_paths
 

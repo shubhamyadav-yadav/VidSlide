@@ -272,3 +272,79 @@ async def test_upload_invalid_magic_bytes_rejected():
         assert "signature" in response.json().get("detail", "").lower()
 
 
+def test_white_slides_detected_all_sensitivities():
+    """Verify same-background white slides with changing text are detected across low/medium/high."""
+    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tf:
+        video_path = tf.name
+
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_path, fourcc, 30.0, (960, 540))
+
+        slides_text = [
+            [("1. Super Key", 100), ("- Uniquely identifies records", 200), ("- May contain redundant columns", 280)],
+            [("2. Candidate Key", 100), ("- Minimal super key without extras", 200), ("- Example: {EID}, {Email}", 280)],
+            [("3. Foreign Key", 100), ("- References Primary Key in parent", 200), ("- Enforces referential integrity", 280)],
+        ]
+        for lines in slides_text:
+            frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+            for txt, y in lines:
+                cv2.putText(frame, txt, (60, y), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (20, 20, 20), 2)
+            for _ in range(60):  # 2.0 seconds per slide
+                out.write(frame)
+        out.release()
+
+        for sens in ("low", "medium", "high"):
+            with tempfile.TemporaryDirectory() as td:
+                frames = extract_frames_scene_change(video_path, td, sensitivity=sens, min_gap=0.5)
+                assert len(frames) == 3, f"Expected 3 slides for {sens}, got {len(frames)}: {frames}"
+    finally:
+        if os.path.exists(video_path):
+            os.remove(video_path)
+
+
+def test_webcam_motion_and_transition_settling():
+    """Verify moving corner webcam does not cause infinite settle stall or duplicate frames."""
+    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tf:
+        video_path = tf.name
+
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_path, fourcc, 30.0, (640, 360))
+        rng = np.random.RandomState(42)
+
+        # Slide 1 with moving webcam corner for 2 seconds (60 frames)
+        for _ in range(60):
+            frame = np.full((360, 640, 3), 245, dtype=np.uint8)
+            cv2.putText(frame, "TOPIC A: DATABASES", (40, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (10, 10, 10), 2)
+            cv2.putText(frame, "- Relational schema design", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (10, 10, 10), 2)
+            frame[250:340, 500:620] = rng.randint(40, 200, (90, 120, 3), dtype=np.uint8)
+            out.write(frame)
+
+        # Smooth fade transition over 0.4s (12 frames)
+        s1 = np.full((360, 640, 3), 245, dtype=np.uint8)
+        cv2.putText(s1, "TOPIC A: DATABASES", (40, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (10, 10, 10), 2)
+        s2 = np.full((360, 640, 3), 245, dtype=np.uint8)
+        cv2.putText(s2, "TOPIC B: NORMALIZATION", (40, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (10, 10, 10), 2)
+        cv2.putText(s2, "- First, Second, Third Normal Form", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (10, 10, 10), 2)
+        for i in range(12):
+            alpha = (i + 1) / 13.0
+            blend = cv2.addWeighted(s1, 1.0 - alpha, s2, alpha, 0)
+            out.write(blend)
+
+        # Slide 2 with moving webcam corner for 2 seconds (60 frames)
+        for _ in range(60):
+            frame = s2.copy()
+            frame[250:340, 500:620] = rng.randint(40, 200, (90, 120, 3), dtype=np.uint8)
+            out.write(frame)
+
+        out.release()
+
+        with tempfile.TemporaryDirectory() as td:
+            frames = extract_frames_scene_change(video_path, td, sensitivity="medium", min_gap=0.5)
+            assert len(frames) == 2, f"Expected 2 clean slides despite webcam & fade, got {len(frames)}"
+    finally:
+        if os.path.exists(video_path):
+            os.remove(video_path)
+
+

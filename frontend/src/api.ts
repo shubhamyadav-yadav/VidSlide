@@ -1,9 +1,11 @@
 import axios from 'axios';
 
+const TUNNEL_URL = 'https://slide-legs-mls-freight.trycloudflare.com';
+
 const CANDIDATE_BACKENDS = [
   (typeof window !== 'undefined' ? localStorage.getItem('vidslide_backend_url') : null),
   import.meta.env.VITE_API_URL,
-  'https://src-returned-unity-mobiles.trycloudflare.com',
+  TUNNEL_URL,
   'http://127.0.0.1:8000',
   'http://localhost:8000',
 ].filter((u): u is string => Boolean(u && u.trim()));
@@ -21,8 +23,11 @@ export async function ensureBackendUrl(): Promise<string> {
   if (probePromise) return probePromise;
 
   probePromise = (async () => {
-    // If running locally on Vite dev server (:5173), check if Vite proxy works first
-    if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+    // If running locally on Vite dev server (:5173) or FastAPI (:8000), check same-origin /api/health first
+    if (
+      typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ) {
       try {
         const res = await fetch('/api/health', { method: 'GET' });
         if (res.ok) {
@@ -54,11 +59,13 @@ export async function ensureBackendUrl(): Promise<string> {
       }
     }
 
-    // If on Vercel (HTTPS), default to the stable Cloudflare tunnel
+    // Reset probePromise so the next user submit attempt retries probing cleanly
+    probePromise = null;
+
+    // If on Vercel (HTTPS), default to the active Cloudflare tunnel
     if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
-      resolvedBaseUrl = 'https://src-returned-unity-mobiles.trycloudflare.com';
-      api.defaults.baseURL = resolvedBaseUrl;
-      return resolvedBaseUrl;
+      api.defaults.baseURL = TUNNEL_URL;
+      return TUNNEL_URL;
     }
 
     return resolvedBaseUrl;
